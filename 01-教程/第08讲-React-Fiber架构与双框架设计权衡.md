@@ -67,107 +67,29 @@ title: 第 08 讲 · React Fiber 架构与双框架设计权衡
 
 很多入门文章为了简化，会用 `requestIdleCallback` 演示 Fiber 时间切片。但**在 React 真实源码（`packages/scheduler`）中，React 并没有使用 `requestIdleCallback`**，原因有三：
 1. **触发时机太不可控**：`requestIdleCallback` 只在浏览器彻底空闲时才触发，在高频滚动或动画期间可能几十毫秒都不执行一次，且不同浏览器兼容性存在差异；
-2. **默认切片预算（5ms）**：React `Scheduler` 内部规定每个时间片默认预算为 **`frameInterval = 5ms`**。每处理完一个 Fiber 节点，都会调用 `shouldYieldToHost()` 检查 `performance.now() - startTime >= 5`——一旦满 5ms（或者检测到更高优先级的任务插队），立刻让出主线程；
+2. **默认切片预算（5ms）**：React `Scheduler` 内部规定每个时间片默认预算为 **`frameInterval = 5ms`**。每处理完一个 Fiber 节点，都会调用 `shouldYieldToHost()` 检查 `performance.now() - startTime >= 5`——达到让出条件时，Scheduler 会在工作单元之间让出主线程；单个工作单元本身不会被抢占；
 3. **用 `MessageChannel` 触发下一宏任务切片**：为了在让出主线程后尽快启动下一个 5ms 切片，React 优先使用 **`MessageChannel`（通过 `port.postMessage` 派发 0 延迟宏任务）**，在不支持的环境中才降级为 `setTimeout(fn, 0)`。同时，`Scheduler` 内部用一棵**最小堆（Min-Heap）优先级队列**管理不同紧急程度的任务（对应 React 18 的 **Lane 模型**：如同步输入优先级 `SyncLane` > 过渡更新优先级 `TransitionLane`）。
 
-### 2.5 完整可独立运行代码：带双缓冲与 `MessageChannel` 5ms 切片的迷你 Fiber 引擎
+### 2.5 可运行的协作式 Fiber 教学模型：保存进度、让出主线程、完成后切换树引用
 
-下面这段代码**没有任何未定义变量**，你可以直接复制到 Node.js 或浏览器控制台独立运行，亲眼观察一棵 6 节点 Fiber 树是如何被切成多个 5ms 时间片分段协调、并在最后一次性 Commit 的：
+为了避免文章代码与自动化测试中的实现逐渐分叉，完整、可运行的教学模型统一维护在 [\`labs/mini-fiber-scheduler.mjs\`](../labs/mini-fiber-scheduler.mjs)。
 
-```js
-// mini-fiber-scheduler.mjs —— 直接用 node 运行，观察 Fiber 链表遍历、5ms 时间切片中断与双缓冲提交
-import { performance } from 'node:perf_hooks'
+在仓库根目录运行：
 
-// 1. 将嵌套虚拟节点树链接为携带 child / sibling / return 三张纸条的 Fiber 链表树
-function buildFiberTree(vnode, returnFiber = null) {
-  const fiber = {
-    type: vnode.type,
-    child: null,
-    sibling: null,
-    return: returnFiber,
-    effectTag: 'UPDATE'
-  }
-  if (vnode.children && vnode.children.length > 0) {
-    let prevChild = null
-    for (const childVNode of vnode.children) {
-      const childFiber = buildFiberTree(childVNode, fiber)
-      if (!prevChild) {
-        fiber.child = childFiber      // 长子挂在父亲的 child 纸条上
-      } else {
-        prevChild.sibling = childFiber // 其余孩子依次挂在哥哥的 sibling 纸条上
-      }
-      prevChild = childFiber
-    }
-  }
-  return fiber
-}
+\`\`\`bash
+node labs/mini-fiber-scheduler.mjs
+\`\`\`
 
-// 2. 模拟每个组件耗时 3ms 的协调计算，并顺着 child -> sibling -> return 寻找下一工作单元
-function performUnitOfWork(fiber, workLog) {
-  const busyUntil = performance.now() + 3 // 模拟该节点计算耗时 3ms
-  while (performance.now() < busyUntil) {}
-  workLog.push(fiber.type)
+这份模型展示四件事：
 
-  // 深度优先指针寻路：有大儿子走大儿子 -> 没儿子走亲弟弟 -> 没弟弟顺着 return 回溯找叔叔
-  if (fiber.child) return fiber.child
-  let cur = fiber
-  while (cur) {
-    if (cur.sibling) return cur.sibling
-    cur = cur.return
-  }
-  return null
-}
+1. 用 \`child / sibling / return\` 指针保存深度优先遍历路径；
+2. 把单个工作单元当作不可中断的任务，并在工作单元之间检查时间预算；
+3. 当预算用尽时，通过 \`MessageChannel\` 将后续工作安排到另一个任务中；
+4. 先在 \`workInProgressRoot\` 上完成遍历，完成后再切换当前树引用，演示双缓冲的核心思想。
 
-// 3. 复刻 React Scheduler：基于 MessageChannel 宏任务切片 + 5ms 帧预算让出机制
-export function runConcurrentRender(vnodeTree, frameYieldMs = 5) {
-  return new Promise(resolve => {
-    const workInProgressRoot = buildFiberTree(vnodeTree)
-    let workInProgress = workInProgressRoot
-    const sliceHistory = []
-    let currentSliceNodes = []
+**时间预算不是硬实时上限。** JavaScript 不能抢占已经开始执行的单个工作单元，所以一个切片可能超过目标预算，超出量取决于最后一个工作单元的耗时。示例会同时输出每片处理的节点和实测耗时，不会宣称每片必定小于或等于 5ms。
 
-    const channel = new MessageChannel()
-    channel.port1.onmessage = () => workLoop()
-
-    function workLoop() {
-      const sliceStart = performance.now()
-      currentSliceNodes = []
-
-      // 只要还有 Fiber 节点未完成，且当前切片耗时未达到 5ms 预算，就继续推进
-      while (workInProgress !== null && (performance.now() - sliceStart) < frameYieldMs) {
-        workInProgress = performUnitOfWork(workInProgress, currentSliceNodes)
-      }
-      sliceHistory.push([...currentSliceNodes])
-
-      if (workInProgress !== null) {
-        // 时间片耗尽但树尚未协调完：通过 MessageChannel 让出主线程，排队下一宏任务切片！
-        channel.port2.postMessage(null)
-      } else {
-        // Render 阶段全部完成：关闭通道，进入不可中断的 Commit 阶段一次性切换双缓冲指针！
-        channel.port1.close()
-        resolve({ committedRoot: workInProgressRoot.type, slices: sliceHistory })
-      }
-    }
-
-    // 启动首个时间片
-    channel.port2.postMessage(null)
-  })
-}
-
-// 构造一棵 6 个节点的组件树运行测试（每个节点耗时 3ms，总计 18ms，按 5ms 预算会被自动切成多片）
-const sampleApp = {
-  type: 'App',
-  children: [
-    { type: 'Header', children: [{ type: 'Logo' }] },
-    { type: 'Dashboard', children: [{ type: 'Chart' }, { type: 'Table' }] }
-  ]
-}
-
-runConcurrentRender(sampleApp, 5).then(result => {
-  console.log('⚡ 分片协调记录 (每片 <= 5ms 预算):', JSON.stringify(result.slices))
-  console.log('✅ 双缓冲 Commit 完成，根节点:', result.committedRoot)
-})
-```
+**边界说明：** 这是用于理解协作式调度与树引用切换的最小模型，不是 React 源码的复刻。它没有实现 React 的 Lane 优先级队列、任务取消与重启、真实协调过程或 DOM Commit；模型中的“Commit”只表示在遍历完成后切换树引用。单个 100ms 的同步函数也不会被这个调度器自动切开，必须把工作本身拆成多个可让出的单元，或把计算交给 Worker。
 
 ---
 

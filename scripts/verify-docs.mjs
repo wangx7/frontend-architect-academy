@@ -57,6 +57,24 @@ for (const filePath of mdFiles) {
     errors.push(`[H1标题数量异常(${h1Count})] ${relPath}`)
   }
 
+  // Check repeated numeric sub-section numbering outside fenced code blocks.
+  const seenHeadingNumbers = new Set()
+  let inHeadingFence = false
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      inHeadingFence = !inHeadingFence
+      continue
+    }
+    if (inHeadingFence) continue
+    const numberedHeading = line.match(/^(#{2,6})\\s+((?:\\d+\\.)+\\d+)\\s+/)
+    if (!numberedHeading) continue
+    const key = `${numberedHeading[1].length}:${numberedHeading[2]}`
+    if (seenHeadingNumbers.has(key)) {
+      errors.push(`[重复小节编号 ${numberedHeading[2]}] ${relPath}: ${line}`)
+    }
+    seenHeadingNumbers.add(key)
+  }
+
   // 2. Check internal Markdown links
   const withoutCode = content.replace(/```[\s\S]*?```/g, '').replace(/`[^`]+`/g, '')
   const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g

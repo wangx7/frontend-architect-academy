@@ -6,6 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
+import { runConcurrentRender } from './mini-fiber-scheduler.mjs'
 
 // ============================================================================
 // 1. 概念 03 & 09 & 实验 08：手写双向链表 + 哈希表 O(1) LRU 缓存淘汰算法
@@ -341,4 +342,191 @@ test('概念20 & 实验14：Raft 在 2 vs 3 网络分区下应阻止少数派写
   cluster.partitionGroups = null
   cluster.getNode('A').tryReplicateCommand('stale_try')
   assert.equal(cluster.getNode('A').role, 'Follower')
+})
+
+
+// ============================================================================
+// 9. 第 08 讲：协作式 Fiber 遍历与时间片让步（教学模型，不是 React 源码）
+// ============================================================================
+test('第08讲：Fiber 教学调度器应遍历所有节点、分多个任务让步，并在末尾切换树引用', async () => {
+  const tree = {
+    type: 'App',
+    children: [
+      { type: 'Header', children: [{ type: 'Logo' }] },
+      { type: 'Main', children: [{ type: 'List' }, { type: 'Footer' }] }
+    ]
+  }
+  const result = await runConcurrentRender(tree, { frameYieldMs: 1, unitWorkMs: 2 })
+  assert.equal(result.committed, true)
+  assert.equal(result.committedRoot, 'App')
+  assert.deepEqual(result.visited, ['App', 'Header', 'Logo', 'Main', 'List', 'Footer'])
+  assert.equal(result.slices.flat().length, 6)
+  assert.ok(result.slices.length > 1, '超出单片预算的工作应被拆分到多个任务')
+})
+
+// ============================================================================
+// 10. 第 16 讲：B+ 树叶子页链式范围游标的教学模型
+// ============================================================================
+function scanLeafPageRange(firstPage, lower, upper) {
+  const result = []
+  for (let page = firstPage; page; page = page.next) {
+    for (const key of page.keys) {
+      if (key < lower) continue
+      if (key > upper) return result
+      result.push(key)
+    }
+  }
+  return result
+}
+
+test('第16讲：叶子页范围游标应跨页按序返回闭区间内的键', () => {
+  const p1 = { keys: [1, 2, 3], next: null }
+  const p2 = { keys: [4, 5], next: null }
+  const p3 = { keys: [6, 7, 8], next: null }
+  p1.next = p2
+  p2.next = p3
+  assert.deepEqual(scanLeafPageRange(p1, 3, 6), [3, 4, 5, 6])
+  assert.deepEqual(scanLeafPageRange(p1, 9, 12), [])
+})
+
+// ============================================================================
+// 11. 概念 19：令牌桶限流的可控时钟教学模型
+// ============================================================================
+class TokenBucketModel {
+  constructor(capacity, refillPerSecond, now = 0) {
+    this.capacity = capacity
+    this.refillPerMs = refillPerSecond / 1000
+    this.tokens = capacity
+    this.last = now
+  }
+
+  tryTake(now) {
+    const elapsed = Math.max(0, now - this.last)
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.refillPerMs)
+    this.last = Math.max(this.last, now)
+    if (this.tokens < 1) return false
+    this.tokens -= 1
+    return true
+  }
+}
+
+test('概念19：令牌桶应允许容量内突发请求、耗尽后拒绝，并按速率补充令牌', () => {
+  const bucket = new TokenBucketModel(2, 1)
+  assert.equal(bucket.tryTake(0), true)
+  assert.equal(bucket.tryTake(0), true)
+  assert.equal(bucket.tryTake(0), false)
+  assert.equal(bucket.tryTake(1000), true)
+  assert.equal(bucket.tryTake(1000), false)
+})
+
+// ============================================================================
+// 12. 概念 19：一致性哈希环的确定性与节点增减教学模型
+// ============================================================================
+function fnv1a32(value) {
+  let hash = 0x811c9dc5
+  for (const byte of Buffer.from(String(value))) {
+    hash ^= byte
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash >>> 0
+}
+
+function makeHashRing(nodes, replicas = 50) {
+  const ring = []
+  for (const node of nodes) {
+    for (let replica = 0; replica < replicas; replica++) {
+      ring.push({ hash: fnv1a32(`${node}#${replica}`), node })
+    }
+  }
+  ring.sort((a, b) => a.hash - b.hash)
+  return {
+    owner(key) {
+      const target = fnv1a32(key)
+      let low = 0
+      let high = ring.length
+      while (low < high) {
+        const mid = (low + high) >>> 1
+        if (ring[mid].hash < target) low = mid + 1
+        else high = mid
+      }
+      return ring[low % ring.length].node
+    }
+  }
+}
+
+test('概念19：一致性哈希映射应确定，并且增添节点不必重映射全部键', () => {
+  const before = makeHashRing(['A', 'B'])
+  const after = makeHashRing(['A', 'B', 'C'])
+  const keys = Array.from({ length: 500 }, (_, i) => `user-${i}`)
+  const beforeOwners = keys.map(key => before.owner(key))
+  const afterOwners = keys.map(key => after.owner(key))
+  assert.deepEqual(keys.map(key => before.owner(key)), beforeOwners)
+  assert.ok(afterOwners.every(node => ['A', 'B', 'C'].includes(node)))
+  const unchanged = beforeOwners.filter((node, i) => node === afterOwners[i]).length
+  assert.ok(unchanged > 0, '增添一个节点时应存在未受影响的键')
+  assert.ok(unchanged < keys.length, '新增节点应接管环上的一部分键')
+})
+
+// ============================================================================
+// 13. 第 16 讲：MVCC 快照与 WAL 恢复的简化教学模型
+// ============================================================================
+class SnapshotWalModel {
+  constructor() {
+    this.versions = [{ version: 0, value: 0 }]
+    this.wal = []
+  }
+
+  commit(value) {
+    const version = this.versions[this.versions.length - 1].version + 1
+    const record = { version, value }
+    this.wal.push({ ...record, committed: true })
+    this.versions.push(record)
+    return version
+  }
+
+  readAt(snapshotVersion) {
+    let visible = this.versions[0]
+    for (const record of this.versions) {
+      if (record.version <= snapshotVersion) visible = record
+      else break
+    }
+    return visible.value
+  }
+
+  recover() {
+    this.versions = [{ version: 0, value: 0 }]
+    for (const record of this.wal) {
+      if (record.committed) this.versions.push({ version: record.version, value: record.value })
+    }
+  }
+}
+
+test('第16讲：旧快照应可读历史版本，恢复时只重放已提交 WAL 记录', () => {
+  const store = new SnapshotWalModel()
+  const snapshotV1 = store.commit(10)
+  const snapshotV2 = store.commit(20)
+  store.wal.push({ version: 3, value: 999, committed: false })
+  assert.equal(store.readAt(snapshotV1), 10)
+  assert.equal(store.readAt(snapshotV2), 20)
+  store.recover()
+  assert.equal(store.readAt(999), 20)
+})
+
+// ============================================================================
+// 14. 第 14 讲：ETag / 304 条件缓存语义的最小模型
+// ============================================================================
+function conditionalEtagResponse(currentEtag, requestEtag, body) {
+  if (requestEtag === currentEtag) return { status: 304, body: '' }
+  return { status: 200, etag: currentEtag, body }
+}
+
+test('第14讲：ETag 匹配时返回无正文 304，不匹配时返回 200 与最新正文', () => {
+  assert.deepEqual(
+    conditionalEtagResponse('"v1"', '"v1"', '<h1>cached</h1>'),
+    { status: 304, body: '' }
+  )
+  assert.deepEqual(
+    conditionalEtagResponse('"v2"', '"v1"', '<h1>new</h1>'),
+    { status: 200, etag: '"v2"', body: '<h1>new</h1>' }
+  )
 })
