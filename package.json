@@ -1,11 +1,14 @@
 {
   "name": "frontend-architect-academy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "前端架构师学院：覆盖网络协议、浏览器引擎、框架内核、工程化与系统架构的中文技术教程",
   "scripts": {
     "dev": "vitepress dev .",
     "build": "vitepress build .",
-    "preview": "vitepress preview ."
+    "preview": "vitepress preview .",
+    "verify:docs": "node scripts/verify-docs.mjs",
+    "test:labs": "node --test labs/*.test.mjs",
+    "verify": "node scripts/verify-docs.mjs && node --test labs/*.test.mjs && vitepress build ."
   },
   "keywords": [
     "frontend",

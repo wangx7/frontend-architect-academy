@@ -5,148 +5,168 @@ title: 概念 20 · CAP 定理与 Raft 多数派共识
 # 概念 20｜CAP 定理与 Raft 多数派共识
 
 > **一句话人话定义**：
-> - **CAP 定理**：当两座机房之间的光缆被挖断（发生**网络分区 P**，两边的机器没法互相通气）时，你只能在两个选择里忍痛二选一——要么**暂停对外写入服务，死保两边账本绝对一致（选 C 强一致性）**；要么**允许两边先各自接客记账，等网通了再对账（选 A 高可用性）**；
-> - **Raft 多数派共识**：为了防止断网后两边各自选出一个老大同时改账本（这叫**“脑裂”**），立下一条数学铁律——**无论是当选老大还是确认一笔写入，必须拿到“严格过半数机器（如 5 台里的至少 3 台）”的亲笔签名才算数**；因为 5 台机器不管怎么断网，永远不可能同时有两个阵营都凑够 3 台！
+> - **CAP 定理**：当跨节点通信发生**网络分区（Partition Tolerance，P）**导致节点之间无法同步消息时，系统无法同时保证**线性一致性（Consistency，C：所有读操作都能读到最新已写入的值）**与**完美可用性（Availability，A：每个非故障节点都必须对读写请求返回非错误响应）**；
+> - **Raft 共识算法**：通过**任期号（Term）+ 严格多数派交集（Quorum）+ 候选人日志新旧度检查（Log Up-to-Date Check）+ 当前任期日志提交约束**，确保在网络分区或节点宕机时，集群不会产生双主覆盖已提交数据的“脑裂（Split-Brain）”。
 
 ## 1. 它们被什么痛点逼出来的？
 
-如果全公司的业务只跑在 **1 台** 数据库服务器上，一旦这台机器的主板烧了或机房停电，全站当场瘫痪。
-为了做到“挂掉一台机器照样运转（高可用）”，架构师摆了 **5 台机器** 存同一份账本：平时选出 **1 台当主库（Leader）** 负责接写请求，另外 **4 台当从库（Follower）** 实时抄写主库的日志，并且主库每隔 100 毫秒给从库发一次心跳（“我还活着，别造反！”）。
+如果业务数据只存在 **1 台** 服务器上，主板损坏或机房断电就会导致服务彻底中断（单点故障 SPOF）。
+为了高可用，工程上会将同一份数据复制到多台机器（如 5 节点集群）。但一旦引入多机复制，只要机房间的网线中断，把 5 台机器切成互相无法通信的两半——**左边孤岛 `[A, B]`（含原主库 A）** 与 **右边孤岛 `[C, D, E]`**：
+1. 右边 3 台机器收不到原主库 A 的心跳，准备选出新主库 C 接收客户端写入；
+2. 左边的原主库 A 若继续接收客户端写入，两边账本就会分叉冲突（**脑裂 Split-Brain**）；
+3. 更凶险的是：**万一右边某个日志严重落后的节点当选了新主库，岂不是会把之前已经向用户承诺成功的写入记录覆盖弄丢？**
 
-这套主从模式平时岁月静好，直到有一天，挖掘机挖断了跨机房网线，把 5 台机器劈成了**互相连不上的两个孤岛**：
-- **左边孤岛（2 台）**：包含**原主库 A** 和从库 B；
-- **右边孤岛（3 台）**：包含从库 C、D、E。
-
-恐怖的事情发生了：
-1. 右边的 C、D、E 连续好几秒没收到原主库 A 的心跳，以为 A 已经烧毁阵亡了，于是推举 **C 当上了新主库**！
-2. 左边的原主库 A 根本不知道自己被网线孤立了，它觉得自己身体倍儿棒，依然自称是**主库**！
-3. 这下集群里同时出现了 **两个主库（双头怪 / 脑裂 Split-Brain）**！如果张三往左边的 A 存钱，李四往右边的 C 扣钱，两边各记各的账，等网线修好那天，两本完全冲突的假账撞在一起，银行账目彻底完蛋！
-
-怎么从数学上保证：**哪怕网线被砍成八截，全天下同一时刻也绝对只有一个合法主库能成功写入数据**？
+为了在理论上厘清分布式复制的边界，并在工程上安全地实现故障自动切换，诞生了 **CAP 定理** 与 **Raft / Paxos / ZAB 等共识协议**。
 
 ---
 
-## 2. 逐帧慢放：CAP 二选一困境与 Raft 防脑裂三大铁律
+## 2. 第一层（直观模型）：多数派交集（Quorum）为什么能防双主？
 
-### 镜头一：30 秒看懂 CAP 定理（为什么断网时 C 和 A 不可能兼得？）
-
-假设现在只有北京机房（机器 A）和上海机房（机器 B）两台服务器，初始余额都是 `100 元`，中间的网线突然断了（**P 网络分区发生**）。
-此时用户连上北京机房 A，要把余额改成 `200 元`。作为架构师，你只有两条路可走：
+先建立最核心的**抽屉原理（多数派交集直觉）**：
+在一个拥有 `N = 5` 台机器的集群中，规定**严格过半数（Quorum）门槛为 `Math.floor(5 / 2) + 1 = 3` 票**。
+- 无论网线怎么断，5 台机器**绝不可能同时分裂出两个都拥有 `>= 3` 台机器的阵营**；
+- 任何两个包含至少 3 台机器的集合（例如上次确认写入的 `{A, B, C}` 与本次投票选新主的 `{C, D, E}`），**中间至少有 1 台重叠的见证人机器（`C`）**！
 
 ```text
-             北京机房 A (余额 100)  ─── ⚡️ 光缆断开 (P) ⚡️ ───  上海机房 B (余额 100)
-                    ▲                                                    ▲
-         用户写入：改成 200 元！                              另一用户读取：现在多少钱？
+          5 节点集群（总票数 N = 5，严格多数派门槛 Quorum = 3 票）
 
-【选择一：保 CP（强一致性 Consistency，牺牲可用性）】
-  北京 A 发现联系不上上海 B，无法把“改成 200”同步给 B。
-  为了防止上海的用户读到旧的 100 元，北京 A 当场向用户报错：“系统维护中，拒绝写入！”
-  ──► 代价：服务不可用了（牺牲 A）；好处：两边数据绝对不会出现一新一旧的不一致（保住 C）。
-
-【选择二：保 AP（高可用性 Availability，牺牲强一致性）】
-  北京 A 先不管三七二十一，把自己的账本改成 200 元并返回“成功”；
-  同时允许上海 B 继续对外返回旧的 100 元，等几分钟后光缆修好了，A 再把 200 元同步给 B（最终一致性）。
-  ──► 代价：断网期间两边数据不一致（牺牲 C）；好处：两边机器永远不报错、永远能接客（保住 A）。
+   【少数派分区：仅 A、B 两台】          ⚡️ 网络分区 P ⚡️        【多数派分区：C、D、E 三台】
+  ┌──────────────────────────────┐                            ┌────────────────────────────────┐
+  │ 原主库 A (Term = 1)          │                            │ C 发起 Term = 2 选举           │
+  │ 从库 B                       │                            │ 拿到 C、D、E 共 3 票 (>= 3)    │
+  └──────────────┬───────────────┘                            │ ──► C 当选 Term = 2 新主库！   │
+                 ▼                                            └───────────────┬────────────────┘
+   客户端向旧主 A 发起写入：                                                  ▼
+   A 仅能拿到 {A, B} 2 个确认 (< 3)，                         客户端向新主 C 发起写入：
+   无法推进 commitIndex，拒绝向客户端确认成功！               C 拿到 {C, D, E} 3 个确认 (>= 3)，
+                                                              安全推进 commitIndex 并返回成功！
 ```
 
 ---
 
-### 镜头二：Raft 共识算法是怎么靠“任期（Term）+ 严格过半（Quorum）”杀死脑裂的？
+## 3. 第二层（真实协议机制）：为什么真实的 Raft 绝不只是一个“多数派计数器”？
 
-回到刚才 5 台机器裂成“左边 2 台（A、B）”和“右边 3 台（C、D、E）”的绝境。
-**Raft 算法**定下了三条极其直观的保命家规，直接从数学上封死了脑裂的任何可能：
+如果只看上面的直观模型，很容易产生一个致命误解：*“是不是只要拿到 3 票就能当老大、只要写满 3 台就算实现了 Raft？”*
+**绝对不是！** 在 Ongaro & Ousterhout 的 Raft 论文（*In Search of an Understandable Consensus Algorithm, §5*）中，一个能投入生产的 Raft 状态机必须满足以下 **四大安全机制**：
 
-#### 家规 1：严格过半数才算数（`多数派门槛 = Math.floor(N / 2) + 1`）
-在 5 台机器的集群里，严格过半数是 **`3 票`**。
-- **想当选新主库**，必须拿到至少 **3 台**机器的赞成票；
-- **主库想确认一笔写入成功**，也必须把日志抄送给从库，拿到至少 **3 台**机器的“已收到（ACK）”回执，才准向用户返回成功！
+### 机制一：持久化状态先行（Persistent State on Stable Storage）
+每个节点在回复任何 RPC 请求之前，必须将以下三个核心变量**强制刷入非易失磁盘（`fsync`）**：
+1. **`currentTerm`**：节点已知的最新任期号（防止节点重启后忘记自己已经见过更高任期）；
+2. **`votedFor`**：当前任期内把选票投给了谁（防止节点在同任期内重启后“一女二嫁”投出两张票，破坏每任期单 Leader 铁律！）；
+3. **`log[]`**：包含 `(term, index, command)` 的预写日志条目数组。
 
-#### 家规 2：每个任期（Term）每人手里只有一张选票，且随机超时举手
-每次发起新选举，任期号 `term` 自动加 1（像美国总统第 1 任期、第 2 任期）。同一任期内，每台机器只能把票投给第一个来拉票的人。
-为了防止 C、D、E 三个人同一毫秒举手都投给自己导致平票，Raft 让每台机器等待心跳的闹钟时间是**随机的（比如 `150ms ~ 300ms`）**——谁的闹钟先响，谁就先起身拉票！
+### 机制二：选举限制——日志新旧度检查（Log Up-to-Date Check，论文 §5.4.1）
+请思考一个尖锐问题：
+在上面的 `[C, D, E]` 多数派分区里，假设一条已提交的日志当时同步到了 `{A, B, C}` 三台机器（凑够 3 台已提交），而 **`D` 和 `E` 当时网络慢，还没有收到这条日志**！
+现在网线断了，`[C, D, E]` 在一起。如果落后的 `D` 先发起选举，`C` 和 `E` 能不能无脑给 `D` 投票？
+**绝对不能！如果让落后的 `D` 当选新 Leader，`D` 就会用自己的残缺日志覆盖掉 `C` 身上的已提交记录，造成数据丢失！**
 
-现在，请看断网瞬间，左边孤岛（2 台）和右边阵营（3 台）同时发生的慢放对比：
+因此 Raft 规定：**投票者在收到 `RequestVote` 时，必须比对候选人最后一条日志（`lastLogTerm, lastLogIndex`）是否至少和自己一样新**：
+1. 先比最后一条日志的**任期号 `lastLogTerm`**：任期号大的更新；
+2. 若任期号相同，再比**日志长度 `lastLogIndex`**：日志更长的更新。
+- 当落后的 `D` 向握有最新已提交日志的 `C` 拉票时，**`C` 发现 `D` 的日志比自己旧，当场投反对票**！`D` 只能拿到 `D` 和 `E` 两票（`< 3`），落选！
+- 而当握有最新日志的 `C` 发起选举时，`C`、`D`、`E` 检查发现 `C` 的日志不比自己旧，全票通过！**这就从数学上保证了：当选的新 Leader 身上一定包含所有已提交的日志！**
 
-```text
-          5 台机器集群（总票数 = 5，严格过半门槛 Quorum = 3 票！）
-
-   【左边少数派孤岛：仅 A、B 两台】        ⚡️ 网线断开 ⚡️       【右边多数派阵营：C、D、E 三台】
-  ┌────────────────────────────────┐                          ┌──────────────────────────────────┐
-  │ 原主库 A (还在第 1 任期 Term=1)│                          │ 1. C 的随机闹钟最先响！          │
-  │ 从库 B                         │                          │    C 把任期升为 Term=2 向 D、E 拉票│
-  └───────────────┬────────────────┘                          │ 2. C(自己)+D+E 投出 3 张赞成票！ │
-                  │                                           │    (3 >= 3，C 合法当选第2任新主！)│
-                  ▼                                           └─────────────────┬────────────────┘
-   客户端请求打给旧主 A：“扣款 100！”                                           │
-   A 尝试同步日志：                                                             ▼
-   - A 自己签字 (1票)                                          客户端请求打给新主 C：“扣款 100！”
-   - 从库 B 签字 (2票)                                         C 同步日志给 D、E：
-   - 联系不上 C、D、E！                                        - C(1票) + D(2票) + E(3票) = 3 票！
-   ✘ 2 票 < 3 票门槛！                                         ✔ 3 票 >= 3 票门槛！
-   ──► 旧主 A 拒绝提交！客户端不会收到假成功！                 ──► 新主 C 安全提交写入！
-
-  ═══════════════════════ ⚡️ 5 分钟后网线修好，两边重新连通 ⚡️ ═══════════════════════
-   旧主 A(Term=1) 看到新主 C 的任期号是 Term=2（比自己高！），
-   A 二话不说当场摘下皇冠退位变成普通从库，乖乖把未提交的脏数据清掉，跟新主 C 对齐账本！
-```
-
-### 💡 架构师秒懂算账：为什么 Raft / Etcd / ZooKeeper 集群永远部署“奇数台（3 台或 5 台）”，从不部署 4 台或 6 台？
-算一下“过半数门槛”就明白了：
-- **3 台机器**：过半门槛是 `2 票` ──► 最多允许同时挂掉 `3 - 2 = 1 台` 机器；
-- **4 台机器**：过半门槛是 `3 票` ──► 最多允许同时挂掉 `4 - 3 = 1 台` 机器！
-你看：**买 4 台服务器和买 3 台服务器一样，都只能容忍挂掉 1 台（挂 2 台就凑不够 3 票停摆了），而且 4 台每次写入还要多等 1 台机器签字！所以部署偶数台纯属多花钱还降速！**
+### 机制三：日志复制与提交约束（Log Matching & Commit Rule，论文 §5.4.2）
+1. **日志匹配与冲突修复（`AppendEntries` 一致性检查）**：Leader 发送日志时会附带前一条日志的 `(prevLogIndex, prevLogTerm)`，若 Follower 对不上则拒绝接收，Leader 会递减 `nextIndex` 找到双方的最后共同祖先，强制覆盖 Follower 上未提交的冲突分叉日志；
+2. **仅直接提交当前任期的日志（图 8 安全约束）**：Leader 只有当**自己当前任期（`currentTerm`）**产生的新日志被复制到多数派节点后，才推进 `commitIndex`（并顺带间接提交此前旧任期遗留的日志），防止旧任期未提交完的日志在多次主从切换中被覆盖。
 
 ---
 
-## 3. 代码逐行带入走读：30 行手写 Raft“多数派写入校验 + 高任期自动退位”模拟器
+## 4. 第三层（边界与反例）：精准区分 CAP 边界与主流共识协议家族
+
+| 常见概念混淆 | 架构师必须掌握的严格边界说明 |
+| :--- | :--- |
+| **误区 1：“CAP 就是随时在强一致（CP）和最终一致（AP）里二选一”** | **严格定义与 PACELC 扩展**：<br>1. 在 Gilbert & Lynch 对 CAP 的形式化证明中，**`C` 特指线性一致性（Linearizability）**，**`A` 特指每个非故障节点都必须返回非错误响应**，而这种二选一的强制冲突**仅在发生网络分区（`P`）时触发**；<br>2. 在没有发生网络分区的正常运行时（99.99% 的时间），系统并非没有权衡——此时面临的是 **PACELC 定理**中的 **`E (Else) -> L (Latency 延迟) vs C (Consistency 一致性)`**：即为了保证强一致（等待多数派节点跨机房网络往返确认），就必须付出更高的写入延迟！ |
+| **误区 2：“ZooKeeper、etcd、Kafka 全都用的是 Raft 协议”** | **严格协议区分**：<br>虽然它们都使用了“多数派 Quorum + 领导者复制”的核心思想，但底层协议并不相同：<br>- **使用 Raft 的系统**：**etcd**（Kubernetes 控制面存储）、**Consul**、**TiKV / TiDB**、**CockroachDB**、**Kafka KRaft**（Kafka 3.x+ 替代 ZooKeeper 的内置共识引擎）；<br>- **使用 ZAB（ZooKeeper Atomic Broadcast）协议的系统**：**Apache ZooKeeper**（ZAB 诞生早于 Raft，采用 `epoch + counter` 事务 ID `zxid` 而非 Raft 的独立 `Term + Index`）；<br>- **使用 Paxos / Multi-Paxos 的系统**：Google **Chubby**、**Spanner**、**OceanBase**。 |
+| **误区 3：“只要过了 Raft 多数派，客户端读任何节点都能读到最新值”** | **Follower 滞后读边界（Read Index / Lease Read）**：<br>写入只需 3/5 节点确认即返回成功，意味着剩下 2 台 Follower 此时可能还没收到最新数据！如果客户端直接连那 2 台慢 Follower 读数据，就会读到旧值（破坏线性一致性）。在 Raft 中，要实现**线性一致读（Linearizable Read）**，必须走 Leader 确认自己仍是合法主库（**ReadIndex 机制**或基于时钟租约的 **LeaseRead**）后才能返回数据。 |
+
+---
+
+## 5. 可独立运行代码：带“日志新旧度检查（§5.4.1）”的 5 节点 Raft 选主与防脑裂验证
 
 ```js
-class RaftNode {
-  constructor(id, term = 1, role = 'Follower') {
+// raft-safety-sim.mjs —— 直接用 node 运行，验证：(1) 2 vs 3 分区防脑裂 (2) 落后节点因日志不够新被拒投！
+export class SafeRaftNode {
+  constructor(id, log = []) {
     this.id = id
-    this.term = term // 当前任期号
-    this.role = role // 'Leader' | 'Follower'
-    this.log = []
+    this.currentTerm = 1
+    this.votedFor = null
+    this.role = 'Follower'
+    this.log = log // 数组元素格式: { term, cmd }
   }
 
-  // 当收到别的节点发来的更高任期消息时，无条件退位成 Follower！
-  checkTerm(incomingTerm) {
-    if (incomingTerm > this.term) {
-      console.log(`[节点 ${this.id}] 发现更高任期 Term=${incomingTerm} (当前=${this.term})，立即退位成 Follower！`)
-      this.term = incomingTerm
-      this.role = 'Follower'
+  lastLogInfo() {
+    if (this.log.length === 0) return { lastTerm: 0, lastIndex: 0 }
+    return {
+      lastTerm: this.log[this.log.length - 1].term,
+      lastIndex: this.log.length
     }
   }
-}
 
-// 模拟 5 节点集群在网络裂成 [A, B] 与 [C, D, E] 时的写入提交判定
-function commitWrite(leader, reachableNodes, totalClusterSize, command) {
-  const quorum = Math.floor(totalClusterSize / 2) + 1 // 严格过半门槛：5台需3票
-  const acks = reachableNodes.length                  // 当前孤岛内能签字确认的节点数
-  if (acks < quorum) {
-    console.log(`❌ [${leader.id} (Term=${leader.term})] 写入 "${command}" 失败：仅拿到 ${acks}/${totalClusterSize} 票，未达多数派门槛(${quorum}票)，拒绝提交防脑裂！`)
+  // Raft 论文 §5.4.1 核心安全检查：判断候选人的日志是否至少和本节点一样新
+  isCandidateLogUpToDate(candLastTerm, candLastIndex) {
+    const { lastTerm, lastIndex } = this.lastLogInfo()
+    if (candLastTerm !== lastTerm) return candLastTerm > lastTerm
+    return candLastIndex >= lastIndex
+  }
+
+  onRequestVote(candId, candTerm, candLastTerm, candLastIndex) {
+    if (candTerm > this.currentTerm) {
+      this.currentTerm = candTerm
+      this.role = 'Follower'
+      this.votedFor = null
+    }
+    if (candTerm < this.currentTerm) return false
+    const canVote = this.votedFor === null || this.votedFor === candId
+    // 必须同时满足：【本任期尚未投给别人】且【候选人日志不比我旧】！
+    if (canVote && this.isCandidateLogUpToDate(candLastTerm, candLastIndex)) {
+      this.votedFor = candId
+      return true
+    }
     return false
   }
-  reachableNodes.forEach(n => n.log.push({ term: leader.term, command }))
-  console.log(`✅ [${leader.id} (Term=${leader.term})] 写入 "${command}" 成功：拿到 ${acks}/${totalClusterSize} 票 (≥${quorum}票)，安全落盘！`)
-  return true
 }
 
-const A = new RaftNode('A', 1, 'Leader'), B = new RaftNode('B', 1)
-const C = new RaftNode('C', 2, 'Leader'), D = new RaftNode('D', 2), E = new RaftNode('E', 2)
+export function runElection(candidate, partitionPeers, totalClusterNodes = 5) {
+  candidate.currentTerm += 1
+  candidate.role = 'Candidate'
+  candidate.votedFor = candidate.id
+  let votes = 1
+  const { lastTerm, lastIndex } = candidate.lastLogInfo()
 
-commitWrite(A, [A, B], 5, '转账100元')    // 少数派孤岛（2票 < 3票）：被严词拒绝！
-commitWrite(C, [C, D, E], 5, '转账100元') // 多数派阵营（3票 >= 3票）：安全提交！
-A.checkTerm(C.term)                       // 网络恢复后，旧主 A 遇到 Term=2 的 C，当场退位！
+  for (const peer of partitionPeers) {
+    if (peer.id === candidate.id) continue
+    if (peer.onRequestVote(candidate.id, candidate.currentTerm, lastTerm, lastIndex)) {
+      votes++
+    }
+  }
+  const quorum = Math.floor(totalClusterNodes / 2) + 1
+  if (votes >= quorum) {
+    candidate.role = 'Leader'
+    return { elected: true, leader: candidate.id, term: candidate.currentTerm, votes }
+  }
+  candidate.role = 'Follower'
+  return { elected: false, leader: null, term: candidate.currentTerm, votes }
+}
+
+// 场景复现：A、B、C 拥有已提交的最新日志 (term:1, index:2)，而 D、E 日志落后只有 (term:1, index:1)
+const A = new SafeRaftNode('A', [{ term: 1, cmd: 'x=1' }, { term: 1, cmd: 'x=2' }])
+const B = new SafeRaftNode('B', [{ term: 1, cmd: 'x=1' }, { term: 1, cmd: 'x=2' }])
+const C = new SafeRaftNode('C', [{ term: 1, cmd: 'x=1' }, { term: 1, cmd: 'x=2' }])
+const D = new SafeRaftNode('D', [{ term: 1, cmd: 'x=1' }]) // 落后节点！
+const E = new SafeRaftNode('E', [{ term: 1, cmd: 'x=1' }]) // 落后节点！
+
+// 网络分裂为 [A, B] (少数派) 与 [C, D, E] (多数派)：
+console.log('1. 少数派分区 [A, B] 中 A 尝试选主:', runElection(A, [A, B], 5))
+// 输出: elected: false (仅 2 票 < 3 票)
+
+console.log('2. 多数派分区 [C, D, E] 中【日志落后的 D】抢先发起选主:', runElection(D, [C, D, E], 5))
+// 输出: elected: false (C 发现 D 日志比自己旧拒投，D 仅拿到 D、E 共 2 票 < 3 票，成功阻止数据丢失！)
+
+console.log('3. 多数派分区 [C, D, E] 中【握有完整日志的 C】发起选主:', runElection(C, [C, D, E], 5))
+// 输出: elected: true, leader: 'C', votes: 3 (C、D、E 全票通过，安全接管集群！)
 ```
-
----
-
-## 4. 前后端架构双视角落地
-
-| 场景维度 | 前端架构中的核心体现 | 后端与系统架构中的核心体现 |
-| :--- | :--- | :--- |
-| **AP 最终一致 vs CP 强一致的工程抉择** | 前端应用天然就是分布式系统的边缘节点：<br>1. **何时选 AP（乐观更新 Optimistic UI）**：朋友圈点赞、收藏按钮、待办事项拖拽——用户一点立刻把界面红心点亮，后台异步发请求，万一失败再回滚提示，优先保极致流畅体验（可用性 A）；<br>2. **何时选 CP（强一致悲观锁 + 幂等键）**：确认支付、库存扣减、提现——严禁前端假装成功！必须禁用按钮转圈等待服务端多数派事务返回确认，并在请求头携带唯一幂等号 `Idempotency-Key` 防止弱网超时重发导致重复扣款。 | 1. **CP 强一致基石（Raft / Paxos）**：Kubernetes 的心脏 **etcd**、Consul 服务发现、Kafka 新一代控制器 **KRaft**、TiDB / OceanBase 分布式数据库，底层全部靠 Raft 多数派共识保证高可用与零脑裂；<br>2. **AP 高可用基石**：DNS 域名系统、CDN 边缘节点缓存、客户端离线优先协同应用（CRDTs）。 |
 
 > 🔙 **返回主线教程**：[第 16 讲：数据落盘与分布式：B+ 树、事务、Redis 与 Raft](../01-教程/第16讲-数据落盘与分布式B+树索引事务Redis与Raft.md)  
 > 🧪 **亲手验证本概念**：[实验 14：手写 Raft 选主与网络分区防脑裂模拟](../03-实验/实验14-手写Raft选主与网络分区模拟.md)  

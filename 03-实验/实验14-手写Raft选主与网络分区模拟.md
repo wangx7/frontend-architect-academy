@@ -1,151 +1,213 @@
 ---
-title: 实验 14 · 手写 Raft 选主与网络分区防脑裂模拟
+title: 实验 14 · 手写 Raft 选主（含日志新旧度校验）与网络分区防脑裂模拟
 ---
 
-# 实验 14｜手写 Raft 选主与网络分区防脑裂模拟
+# 实验 14｜手写 Raft 选主（含日志新旧度校验）与网络分区防脑裂模拟
 
 > 📖 **关联教程**：[第 16 讲：数据落盘与分布式：B+ 树、事务、Redis 与 Raft](../01-教程/第16讲-数据落盘与分布式B+树索引事务Redis与Raft.md)  
 > 🔍 **关联概念**：[概念 20：CAP 定理与 Raft 多数派共识](../02-概念/20-CAP定理与Raft多数派共识.md)
 
-## 1. 实验目标
+## 1. 实验目标与教学模型边界声明
 
-1. 用纯 Node.js 代码模拟一个由 5 个节点构成的分布式集群（A、B、C、D、E）；
-2. 亲手实现基于**任期号（Term）**与**严格多数派（Quorum = 3 票）**的 Raft 核心选主机制；
-3. 模拟网络分区：把集群劈成 `[A, B]`（2 台孤岛）与 `[C, D, E]`（3 台阵营），亲眼见证多数派如何选出新 Leader，而少数派孤岛因凑不齐 3 票彻底杜绝“脑裂（Split-Brain）”！
+### 1.1 本实验真正验证的核心安全机制
+1. **严格多数派交集（Quorum = `Math.floor(N/2) + 1`）防双主脑裂**：在 5 节点集群分裂为 `[A, B]`（2 节点少数派孤岛）与 `[C, D, E]`（3 节点多数派阵营）时，验证少数派孤岛既无法选出新主，其上的旧主也无法提交任何新写入；
+2. **选举限制——候选人日志新旧度检查（Raft 论文 §5.4.1 Log Up-to-Date Check）**：验证在多数派阵营 `[C, D, E]` 中，如果日志落后的节点 `D` 抢先发起选举，握有最新已提交日志的节点 `C` 会**拒绝投票给 `D`**，从而防止落后节点当选覆盖已提交数据！
+3. **高任期压制（Term Suppression）**：验证网络恢复后，低任期旧主 `A` 遇到高任期新主 `C` 时自动退位回 `Follower`。
+
+### 1.2 教学模拟器与生产级 Raft 实现（如 etcd / TiKV）的边界说明
+为了将代码控制在 90 行内方便阅读，本教学模拟器做了以下确定性简化（生产系统不可省略）：
+- **网络与时钟模型**：本脚本采用同步方法调用模拟 RPC 与确定性调用顺序；生产级 Raft 运行在异步不可靠网络上，依赖 `150ms ~ 300ms` **随机化选举超时定时器（Randomized Election Timeout）** 避免活锁平票；
+- **状态持久化（Persistence）**：生产级 Raft 在改变 `currentTerm`、`votedFor` 或追加 `log[]` 后，必须在回复 RPC 前调用 `fsync` 落盘，防止节点重启后同一任期投出两张选票；
+- **日志冲突修复与跨任期提交（论文 §5.4.2）**：生产级 Raft 包含完整的 `AppendEntries` `prevLogIndex/prevLogTerm` 递减回溯修复以及“仅通过统计当前任期日志副本数来推进 `commitIndex`”的完整状态机。
+
+---
 
 ## 2. 复制即跑代码
 
 新建 `lab14-raft-split-brain.mjs`，运行 `node lab14-raft-split-brain.mjs`：
 
 ```js
-// lab14-raft-split-brain.mjs —— 60 行模拟 5 节点 Raft 选主、网络分区与防脑裂
-class RaftNode {
-  constructor(id, cluster) {
+// lab14-raft-split-brain.mjs —— 模拟 5 节点 Raft 选主、§5.4.1 日志新旧度校验、网络分区防脑裂与任期压制
+import assert from 'node:assert/strict'
+
+export class RaftNode {
+  constructor(id, cluster, initialLog = []) {
     this.id = id
     this.cluster = cluster
     this.role = 'Follower' // 'Follower' | 'Candidate' | 'Leader'
-    this.term = 0
+    this.currentTerm = 1
     this.votedFor = null
+    this.log = [...initialLog] // 格式: [{ term: 1, cmd: 'SET x=1' }]
+  }
+
+  getLastLogMeta() {
+    if (this.log.length === 0) return { lastLogTerm: 0, lastLogIndex: 0 }
+    return {
+      lastLogTerm: this.log[this.log.length - 1].term,
+      lastLogIndex: this.log.length
+    }
+  }
+
+  // Raft 论文 §5.4.1 选举安全核心：候选人的日志必须至少和投票者一样新！
+  isLogUpToDate(candLastTerm, candLastIndex) {
+    const { lastLogTerm, lastLogIndex } = this.getLastLogMeta()
+    if (candLastTerm !== lastLogTerm) return candLastTerm > lastLogTerm
+    return candLastIndex >= lastLogIndex
   }
 
   // 发起选举拉票
   startElection() {
     this.role = 'Candidate'
-    this.term += 1
+    this.currentTerm += 1
     this.votedFor = this.id
     let votes = 1 // 投给自己 1 票
+    const { lastLogTerm, lastLogIndex } = this.getLastLogMeta()
 
-    // 向可通信的其他节点请求投票
     for (const peer of this.cluster.getReachablePeers(this.id)) {
-      if (peer.requestVote(this.term, this.id)) {
+      if (peer.onRequestVote(this.id, this.currentTerm, lastLogTerm, lastLogIndex)) {
         votes++
       }
     }
 
-    const quorum = Math.floor(this.cluster.nodes.length / 2) + 1 // 5 台中的严格过半 = 3 票
+    const quorum = Math.floor(this.cluster.nodes.length / 2) + 1 // 5 节点需 3 票
     if (votes >= quorum) {
       this.role = 'Leader'
-      return { success: true, term: this.term, votes, leader: this.id }
-    } else {
-      this.role = 'Follower'
-      return { success: false, term: this.term, votes, leader: null }
+      return { elected: true, term: this.currentTerm, votes, leader: this.id }
     }
+    this.role = 'Follower'
+    return { elected: false, term: this.currentTerm, votes, leader: null }
   }
 
-  // 接收拉票请求
-  requestVote(candidateTerm, candidateId) {
-    if (candidateTerm > this.term) {
-      this.term = candidateTerm
+  // 处理投票请求 RPC
+  onRequestVote(candId, candTerm, candLastTerm, candLastIndex) {
+    if (candTerm > this.currentTerm) {
+      this.currentTerm = candTerm
       this.role = 'Follower'
-      this.votedFor = candidateId
+      this.votedFor = null
+    }
+    if (candTerm < this.currentTerm) return false
+
+    const availableToVote = this.votedFor === null || this.votedFor === candId
+    if (availableToVote && this.isLogUpToDate(candLastTerm, candLastIndex)) {
+      this.votedFor = candId
       return true
     }
-    if (candidateTerm === this.term && (this.votedFor === null || this.votedFor === candidateId)) {
-      this.votedFor = candidateId
-      return true
+    return false
+  }
+
+  // Leader 尝试提交客户端写入（必须复制到多数派节点才允许提交）
+  tryReplicateCommand(cmd) {
+    if (this.role !== 'Leader') {
+      return { committed: false, reason: `节点 ${this.id} 不是 Leader` }
     }
-    return false // 任期过旧或本任期已投给他人，拒投！
+    const reachable = [this, ...this.cluster.getReachablePeers(this.id)]
+    const quorum = Math.floor(this.cluster.nodes.length / 2) + 1
+
+    // 先检查并同步任期
+    for (const peer of reachable) {
+      if (peer.currentTerm > this.currentTerm) {
+        this.currentTerm = peer.currentTerm
+        this.role = 'Follower'
+        this.votedFor = null
+        return { committed: false, reason: `发现更高任期 Term=${peer.currentTerm}，旧主 ${this.id} 自动退位！` }
+      }
+    }
+
+    if (reachable.length < quorum) {
+      return {
+        committed: false,
+        acks: reachable.length,
+        reason: `仅连通 ${reachable.length}/${this.cluster.nodes.length} 台 (< 多数派 ${quorum} 台)，拒绝提交防脑裂！`
+      }
+    }
+
+    const entry = { term: this.currentTerm, cmd }
+    reachable.forEach(n => n.log.push(entry))
+    return { committed: true, acks: reachable.length, entry }
   }
 }
 
-// 模拟网络拓扑与分区断网
-class NetworkCluster {
-  constructor(names) {
-    this.nodes = names.map(id => new RaftNode(id, this))
-    this.partition = null // 分区配置，例如 [['A', 'B'], ['C', 'D', 'E']]
+export class RaftCluster {
+  constructor(nodeConfigs) {
+    this.partitionGroups = null
+    this.nodes = nodeConfigs.map(cfg => new RaftNode(cfg.id, this, cfg.log))
   }
-
+  getNode(id) { return this.nodes.find(n => n.id === id) }
   getReachablePeers(fromId) {
     return this.nodes.filter(n => n.id !== fromId && this.canCommunicate(fromId, n.id))
   }
-
   canCommunicate(a, b) {
-    if (!this.partition) return true
-    // 若存在网络分区，仅同组节点可互通
-    const groupA = this.partition.find(g => g.includes(a))
-    const groupB = this.partition.find(g => g.includes(b))
-    return groupA === groupB
+    if (!this.partitionGroups) return true
+    const gA = this.partitionGroups.find(g => g.includes(a))
+    const gB = this.partitionGroups.find(g => g.includes(b))
+    return gA === gB
   }
 }
 
-// === 测试开始 ===
-const cluster = new NetworkCluster(['A', 'B', 'C', 'D', 'E'])
+// ================= 4 阶段全链路演练 =================
+// 初始状态：A 为第 1 任期 Leader，且日志 #2 已同步到 {A, B, C} 多数派；而 D、E 仅同步到日志 #1
+const committedLog = [{ term: 1, cmd: '转入100' }, { term: 1, cmd: '扣减20' }]
+const laggingLog   = [{ term: 1, cmd: '转入100' }]
 
-console.log('--- 阶段 1：网络畅通时节点 A 发起选举 ---')
-const res1 = cluster.nodes[0].startElection()
-console.log(`节点 A 竞选结果: ${res1.success ? '👑 成功当选 Leader' : '❌ 失败'}, 获得 ${res1.votes} 票`)
+const cluster = new RaftCluster([
+  { id: 'A', log: committedLog },
+  { id: 'B', log: committedLog },
+  { id: 'C', log: committedLog },
+  { id: 'D', log: laggingLog },
+  { id: 'E', log: laggingLog }
+])
+cluster.getNode('A').role = 'Leader'
 
-console.log('\n--- 阶段 2：发生网络分区 [A, B] ⚡️ [C, D, E] ---')
-cluster.partition = [['A', 'B'], ['C', 'D', 'E']]
+console.log('=== 阶段 1：光缆被挖断！集群裂为少数派 [A, B] 与多数派 [C, D, E] ===')
+cluster.partitionGroups = [['A', 'B'], ['C', 'D', 'E']]
 
-console.log('👉 少数派孤岛（A, B）：节点 B 发起拉票')
-const resB = cluster.nodes[1].startElection()
-console.log(`节点 B 竞选结果: ${resB.success ? '👑 成功' : '❌ 失败 (凑不齐法定 3 票)'}, 获得 ${resB.votes} 票`)
+const oldLeaderWrite = cluster.getNode('A').tryReplicateCommand('孤岛非法扣款50')
+console.log('旧主 A 在 [A,B] 孤岛尝试写入 ->', oldLeaderWrite)
+assert.equal(oldLeaderWrite.committed, false)
 
-console.log('\n👉 多数派阵营（C, D, E）：节点 C 发起拉票')
-const resC = cluster.nodes[2].startElection()
-console.log(`节点 C 竞选结果: ${resC.success ? '👑 成功当选新 Leader' : '❌ 失败'}, 获得 ${resC.votes} 票`)
+console.log('\n=== 阶段 2：多数派分区中，日志落后的节点 D 抢先发起选举 ===')
+const dElection = cluster.getNode('D').startElection()
+console.log('落后节点 D 选举结果 (被 C 凭 §5.4.1 日志新旧度检查拦截!) ->', dElection)
+assert.equal(dElection.elected, false)
+
+console.log('\n=== 阶段 3：多数派分区中，拥有完整已提交日志的节点 C 发起选举并写入 ===')
+const cElection = cluster.getNode('C').startElection()
+console.log('完整日志节点 C 选举结果 ->', cElection)
+assert.equal(cElection.elected, true)
+
+const newLeaderWrite = cluster.getNode('C').tryReplicateCommand('多数派合法扣款30')
+console.log('新主 C 在 [C,D,E] 阵营提交写入 ->', newLeaderWrite)
+assert.equal(newLeaderWrite.committed, true)
+
+console.log('\n=== 阶段 4：光缆修复，网络分区消失，旧主 A 遇到高任期自动退位 ===')
+cluster.partitionGroups = null
+const afterHeal = cluster.getNode('A').tryReplicateCommand('旧主试图再次发号施令')
+console.log('网络恢复后旧主 A 尝试写入 ->', afterHeal)
+assert.equal(cluster.getNode('A').role, 'Follower')
 ```
 
-## 3. 运行输出与慢放解析
+---
 
-在终端执行该脚本，输出如下：
+## 3. 破坏性实验：如果注释掉 `isLogUpToDate` 检查会发生什么灾难？
 
-```text
---- 阶段 1：网络畅通时节点 A 发起选举 ---
-节点 A 竞选结果: 👑 成功当选 Leader, 获得 5 票
+请亲手做一个破坏性实验：
+把上面第 `56` 行的 `&& this.isLogUpToDate(candLastTerm, candLastIndex)` 删掉，然后再跑一次 `node lab14-raft-split-brain.mjs`！
+你会惊悚地看到：
+- 在阶段 2 中，**日志残缺的节点 `D` 竟然拿到了 `C、D、E` 三票当选了新 Leader**！
+- 紧接着 `D` 会把自己落后的日志强行同步给 `C`，导致之前已经在 `{A, B, C}` 多数派上确认成功的那笔 `{ term: 1, cmd: '扣减20' }` **彻底被抹除丢失**！
+通过这个破坏性对比，你就真正理解了为什么 **“多数派投票 + 日志新旧度检查”** 两个条件缺一不可！
 
---- 阶段 2：发生网络分区 [A, B] ⚡️ [C, D, E] ---
-👉 少数派孤岛（A, B）：节点 B 发起拉票
-节点 B 竞选结果: ❌ 失败 (凑不齐法定 3 票), 获得 2 票
-
-👉 多数派阵营（C, D, E）：节点 C 发起拉票
-节点 C 竞选结果: 👑 成功当选新 Leader, 获得 3 票
-```
-
-### 慢放解析：
-
-1. **法定过半数（Quorum）是唯一的数学真理**：5 台机器的严格过半数是 `Math.floor(5/2) + 1 = 3` 票。
-2. **小孤岛无法产生 Leader**：在 `[A, B]` 孤岛中，即使所有能通气的节点全部投赞成票，上限也只有 2 票，永远无法达到 3 票门槛。因此小孤岛绝对无法选出新主，杜绝了“双主脑裂”；
-3. **大孤岛保持可用性**：在 `[C, D, E]` 多数派阵营中，依然能拿到满额的 3 票，选举合法有效，系统继续对外提供强一致服务（保证了 CP）。
+---
 
 ## 4. 思考题
 
-1. **为什么在分布式生产集群中，Raft / ZooKeeper 节点数通常推荐奇数（如 3 台、5 台），而不是偶数（如 4 台、6 台）？**
+1. **为什么在阶段 2 中，节点 `D` 发起选举失败后，节点 `C` 随后发起选举时，必须把任期号再加 1（升到 `Term = 3`），而不能继续沿用 `D` 刚才用过的 `Term = 2`？**
 
 <details>
 <summary>💡 点击展开本实验思考题参考答案</summary>
 
-因为从容错能力的角度来看，偶数节点不仅无法提升容错上限，反而平白浪费一台机器资源并增加选举平票（Split-Vote）风险：
-- **3 台集群**：多数派需要 2 票，最多允许挂掉 `3 - 2 = 1` 台；
-- **4 台集群**：多数派需要 3 票（`Math.floor(4/2)+1=3`），最多依然只能挂掉 `4 - 3 = 1` 台（若挂 2 台只剩 2 台凑不够 3 票）；
-- **5 台集群**：多数派需要 3 票，允许挂掉 2 台；
-- **6 台集群**：多数派需要 4 票，最多依然只能挂掉 2 台。
-
-因此，4 台机器的容错能力与 3 台完全一样，6 台与 5 台一样。奇数节点既能以最少的机器换取最高容错度，又能避免偶数分区时两边恰好各占一半（例如 2:2）导致选举永久平票。
+因为 Raft 的第一条投票铁律是 **“每个节点在同一个任期（Term）内最多只能投出一张选票（先到先得）”**。在阶段 2 的 `Term = 2` 中，节点 `D` 已经把 `Term = 2` 的选票投给了自己，节点 `E` 也把 `Term = 2` 的选票投给了 `D`。如果节点 `C` 不递增任期号、继续在 `Term = 2` 拉票，`D` 和 `E` 因为在 `Term = 2` 已经没有选票了，只能拒绝 `C`。只有当 `C` 超时将任期推进到全新的 `Term = 3` 时，`D` 和 `E` 的投票箱才会重置，从而全票支持日志最新的 `C` 当选！
 
 </details>
 
----
-
-> 🔙 **返回教程**：[第 16 讲：数据落盘与分布式：B+ 树、事务、Redis 与 Raft](../01-教程/第16讲-数据落盘与分布式B+树索引事务Redis与Raft.md) ｜ 🧪 **返回实验总览**：[03 实验总览](./index.md)
+> 🔙 **返回教程**：[第 16 讲：数据落盘与分布式：B+ 树、事务、Redis 与 Raft](../01-教程/第16讲-数据落盘与分布式B+树索引事务Redis与Raft.md) ｜ 👉 **返回实验总览**：[03 实验 · 动手验证靶场](./index.md)

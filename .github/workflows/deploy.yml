@@ -1,7 +1,9 @@
-name: Deploy VitePress site to Pages
+name: Verify & Deploy VitePress Site to Pages
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -40,15 +42,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify Markdown links & JS code blocks syntax
+        run: pnpm run verify:docs
+
+      - name: Run automated lab assertion tests
+        run: pnpm run test:labs
+
       - name: Build with VitePress
         run: pnpm run build
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: .vitepress/dist
 
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
