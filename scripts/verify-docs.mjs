@@ -66,7 +66,7 @@ for (const filePath of mdFiles) {
       continue
     }
     if (inHeadingFence) continue
-    const numberedHeading = line.match(/^(#{2,6})\\s+((?:\\d+\\.)+\\d+)\\s+/)
+    const numberedHeading = line.match(/^(#{2,6})\s+((?:\d+\.)+\d+)\s+/)
     if (!numberedHeading) continue
     const key = `${numberedHeading[1].length}:${numberedHeading[2]}`
     if (seenHeadingNumbers.has(key)) {

@@ -25,7 +25,7 @@ title: 写作铁律与三层表达标准 · 前端架构师学院
 3. **[03 实验（14 个可复现实验）](./03-实验/index.md)**：每个实验明确区分**“本实验验证的算法/并发机理”**与**“真实生产级引擎的差异边界”**，配套破坏性改参实验与思考题解析。自动化测试只对明确列出的教学模型作断言，不把模型测试等同于生产引擎验证。
 4. **`labs/` 自动化测试与 `scripts/verify-docs.mjs` 门禁**：
    - 运行 `pnpm verify:docs`：自动校验 Markdown 内部链接、代码围栏闭合、唯一一级标题、重复的数字化小节编号，以及内嵌 JS 代码块语法（`node --check`）；
-   - 运行 `pnpm test:labs`：使用 Node.js 原生测试运行器（`node --test`）对 14 个核心机制（LRU、LIS、哈希拉链、红黑树高度与着色不变量、B+ 树范围游标、响应式分支清理、Fiber 优先级切片、Proxy 沙箱隔离、令牌桶与一致性哈希、MVCC+WAL 恢复、带日志新旧度检查的 Raft 选主）执行自动化断言测试；
+   - 运行 `pnpm test:labs`：使用 Node.js 原生测试运行器（`node --test`）运行 14 组教学模型断言：LRU、哈希拉链、红黑树不变量、LIS、响应式分支清理、Proxy 沙箱隔离、ECDH/HKDF 密钥派生原语、Raft 日志新旧度与多数派、Fiber 协作式切片、B+ 树叶子页范围游标、令牌桶、一致性哈希、MVCC/WAL 快照恢复模型、ETag/304 条件缓存模型。它们仅验证所列模型，不等同于生产引擎的完整性、安全性或兼容性证明；
    - 运行 `pnpm verify`：在本地与 GitHub Actions CI 中一键执行 `verify:docs + test:labs + vitepress build`。
 
 ## 三、架构师决策四问（ADR 思考框架）

@@ -291,25 +291,39 @@ test('第12讲 & 实验09：微前端 Proxy 沙箱应保证多子应用并发读
 // ============================================================================
 // 7. 概念 17：TLS 1.3 ECDHE + HKDF 双向流量密钥派生与握手摘要签名
 // ============================================================================
-test('概念17：ECDHE + HKDF 应派生一致共享秘密与独立双向流量密钥并通过签名校验', () => {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+test('概念17：ECDHE + HKDF 教学模型应认证握手上下文并派生匹配的双向流量密钥', () => {
+  // 双方各自生成临时 ECDH 密钥；共享秘密只应在本地计算得到。
   const client = crypto.createECDH('prime256v1')
-  const pubA = client.generateKeys()
+  const clientPublic = client.generateKeys()
   const server = crypto.createECDH('prime256v1')
-  const pubB = server.generateKeys()
+  const serverPublic = server.generateKeys()
+  const clientSecret = client.computeSecret(serverPublic)
+  const serverSecret = server.computeSecret(clientPublic)
+  assert.ok(clientSecret.equals(serverSecret))
 
-  const secretClient = client.computeSecret(pubB)
-  const secretServer = server.computeSecret(pubA)
-  assert.ok(secretClient.equals(secretServer))
+  // 模拟服务器身份签名绑定完整的教学握手上下文（不是 TLS CertificateVerify 的实现）。
+  const { publicKey: serverIdentityPublic, privateKey: serverIdentityPrivate } =
+    crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+  const transcript = Buffer.concat([
+    Buffer.from('teaching-handshake-v1|client|'),
+    clientPublic,
+    Buffer.from('|server|'),
+    serverPublic
+  ])
+  const signature = crypto.sign('sha256', transcript, serverIdentityPrivate)
+  assert.equal(crypto.verify('sha256', transcript, serverIdentityPublic, signature), true)
+  const tamperedTranscript = Buffer.concat([transcript, Buffer.from('|tampered')])
+  assert.equal(crypto.verify('sha256', tamperedTranscript, serverIdentityPublic, signature), false)
 
-  const transcriptHash = crypto.createHash('sha256').update(pubA).update(pubB).digest()
-  const sig = crypto.sign('sha256', transcriptHash, privateKey)
-  assert.equal(crypto.verify('sha256', transcriptHash, publicKey, sig), true)
+  // 对同一个方向，客户端写密钥必须与服务器读密钥相同；反方向也如此。
+  const clientWriteKey = Buffer.from(crypto.hkdfSync('sha256', clientSecret, transcript, 'client traffic', 16))
+  const serverReadKey = Buffer.from(crypto.hkdfSync('sha256', serverSecret, transcript, 'client traffic', 16))
+  const serverWriteKey = Buffer.from(crypto.hkdfSync('sha256', serverSecret, transcript, 'server traffic', 16))
+  const clientReadKey = Buffer.from(crypto.hkdfSync('sha256', clientSecret, transcript, 'server traffic', 16))
 
-  const cKey = Buffer.from(crypto.hkdfSync('sha256', secretClient, transcriptHash, 'c_ap', 16))
-  const sKey = Buffer.from(crypto.hkdfSync('sha256', secretServer, transcriptHash, 's_ap', 16))
-  assert.equal(cKey.length, 16)
-  assert.equal(cKey.equals(sKey), false, '客户端与服务端两个方向的流量密钥必须彼此独立')
+  assert.equal(clientWriteKey.equals(serverReadKey), true)
+  assert.equal(serverWriteKey.equals(clientReadKey), true)
+  assert.equal(clientWriteKey.equals(serverWriteKey), false, '两个方向的流量密钥必须彼此独立')
 })
 
 // ============================================================================
