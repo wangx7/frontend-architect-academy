@@ -1,0 +1,25 @@
+{
+  "name": "frontend-architect-academy",
+  "version": "1.0.0",
+  "description": "前端架构师学院：覆盖网络协议、浏览器引擎、框架内核、工程化与系统架构的中文技术教程",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "keywords": [
+    "frontend",
+    "architecture",
+    "vue",
+    "react",
+    "vitepress",
+    "network"
+  ],
+  "author": "wangx",
+  "license": "MIT",
+  "devDependencies": {
+    "@vue/theme": "^2.4.0",
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.13"
+  }
+}

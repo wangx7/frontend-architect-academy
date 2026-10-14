@@ -1,0 +1,446 @@
+/**
+ * 前端架构师学院 - Vue.js 官方文档风格设计系统 (Vue Design System)
+ * 100% 像素级对标 https://cn.vuejs.org / vuejs/theme
+ */
+
+:root {
+  --vp-nav-height: 64px;
+  /* 1. Vue 官方 Primitive 颜色代币 (直接提取自 cn.vuejs.org) */
+  --vt-c-white: #ffffff;
+  --vt-c-white-soft: #f9f9f9;
+  --vt-c-white-mute: #f1f1f1;
+
+  --vt-c-black: #1a1a1a;
+  --vt-c-black-pure: #000000;
+  --vt-c-black-soft: #242424;
+  --vt-c-black-mute: #2f2f2f;
+
+  --vt-c-indigo: #213547;
+  --vt-c-indigo-soft: #476582;
+  --vt-c-indigo-light: #aac8e4;
+
+  --vt-c-gray: #8e8e8e;
+  --vt-c-gray-light-1: #aeaeae;
+  --vt-c-gray-light-2: #c7c7c7;
+  --vt-c-gray-light-3: #d1d1d1;
+  --vt-c-gray-light-4: #e5e5e5;
+  --vt-c-gray-light-5: #f2f2f2;
+
+  /* 细分割线 (Vue 标志性 1px 发丝线) */
+  --vt-c-divider-light-1: rgba(60, 60, 60, 0.29);
+  --vt-c-divider-light-2: rgba(60, 60, 60, 0.12);
+  --vt-c-divider-dark-1: rgba(84, 84, 84, 0.65);
+  --vt-c-divider-dark-2: rgba(84, 84, 84, 0.48);
+
+  /* 文字颜色 */
+  --vt-c-text-light-1: var(--vt-c-indigo);
+  --vt-c-text-light-2: rgba(60, 60, 60, 0.7);
+  --vt-c-text-light-3: rgba(60, 60, 60, 0.33);
+  --vt-c-text-light-4: rgba(60, 60, 60, 0.18);
+  --vt-c-text-light-code: var(--vt-c-indigo-soft);
+
+  --vt-c-text-dark-1: #ffffffde;
+  --vt-c-text-dark-2: #ebebeb99;
+  --vt-c-text-dark-3: #ebebeb61;
+  --vt-c-text-dark-4: #ebebeb2e;
+  --vt-c-text-dark-code: var(--vt-c-indigo-light);
+
+  /* Vue 标志性翠绿品牌色 */
+  --vt-c-green: #42b883;
+  --vt-c-green-light: #42d392;
+  --vt-c-green-lighter: #35eb9a;
+  --vt-c-green-dark: #33a06f;
+  --vt-c-green-darker: #155f3e;
+
+  /* 2. VitePress Semantic 映射 */
+  --vp-c-brand-1: var(--vt-c-green);
+  --vp-c-brand-2: var(--vt-c-green-dark);
+  --vp-c-brand-3: var(--vt-c-green-darker);
+  --vp-c-brand-soft: rgba(66, 184, 131, 0.14);
+
+  --vp-c-bg: var(--vt-c-white);
+  --vp-c-bg-soft: var(--vt-c-white-soft);
+  --vp-c-bg-mute: var(--vt-c-white-mute);
+
+  --vp-c-divider: var(--vt-c-divider-light-2);
+  --vp-c-gutter: var(--vt-c-divider-light-2);
+
+  --vp-c-text-1: var(--vt-c-text-light-1);
+  --vp-c-text-2: var(--vt-c-text-light-2);
+  --vp-c-text-3: var(--vt-c-text-light-3);
+
+  /* 顶栏背景色 */
+  --vp-nav-bg-color: var(--vp-c-bg);
+
+  /* 字体族 */
+  --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', 'PingFang SC', sans-serif;
+  --vp-font-family-mono: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace;
+
+  /* 首页 Hero 标题 Vue 渐变 */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(315deg, #42d392 25%, #647eff);
+}
+
+.dark {
+  --vp-c-brand-1: var(--vt-c-green);
+  --vp-c-brand-2: var(--vt-c-green-light);
+  --vt-c-brand-3: var(--vt-c-green-lighter);
+  --vp-c-brand-soft: rgba(66, 184, 131, 0.16);
+
+  --vp-c-bg: var(--vt-c-black);
+  --vp-c-bg-soft: var(--vt-c-black-soft);
+  --vp-c-bg-mute: var(--vt-c-black-mute);
+
+  --vp-c-divider: var(--vt-c-divider-dark-2);
+  --vp-c-gutter: var(--vt-c-divider-dark-2);
+
+  --vp-c-text-1: var(--vt-c-text-dark-1);
+  --vp-c-text-2: var(--vt-c-text-dark-2);
+  --vp-c-text-3: var(--vt-c-text-dark-3);
+
+  --vp-nav-bg-color: var(--vp-c-bg);
+
+  --vp-home-hero-name-background: -webkit-linear-gradient(315deg, #42d392 25%, #647eff);
+}
+
+/* ==========================================================================
+   1. 顶部导航栏 (Vue.js 纯净实体顶栏，单层发丝线)
+   ========================================================================== */
+.VPNav,
+.VPNavBar {
+  background-color: var(--vp-c-bg) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-bottom: none !important;
+}
+
+/* 清除多余重叠边框，仅保留唯一的 1px 发丝线 */
+.VPNavBar .divider {
+  display: block !important;
+}
+
+.VPNavBar .divider-line {
+  background-color: var(--vp-c-divider) !important;
+  height: 1px !important;
+}
+
+/* 顶部导航菜单项与高亮状态 */
+.VPNavBarMenuLink {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  color: var(--vp-c-text-1) !important;
+  padding: 0 12px !important;
+  transition: color 0.2s ease !important;
+}
+
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuLink.active {
+  color: var(--vp-c-brand-1) !important; /* Vue 绿 */
+}
+
+/* ==========================================================================
+   2. 左侧侧边栏 (Vue 经典分组与无框纯文字高亮)
+   ========================================================================== */
+/* 分组标题：如「应用规模」「最佳实践」小号字粗体 */
+.VPSidebarItem.level-0 > .item .text {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.4px !important;
+  color: var(--vp-c-text-1) !important;
+}
+
+/* 侧边栏条目 */
+.VPSidebarItem.level-1 > .item .link,
+.VPSidebarItem.level-2 > .item .link {
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  color: var(--vp-c-text-2) !important;
+  padding: 4px 0 !important;
+  transition: color 0.2s ease !important;
+}
+
+.VPSidebarItem.level-1 > .item .link:hover,
+.VPSidebarItem.level-2 > .item .link:hover {
+  color: var(--vp-c-brand-1) !important;
+}
+
+/* 激活状态：Vue 纯绿文字，无突兀背景框 */
+.VPSidebarItem.is-active > .item > .link {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 600 !important;
+  background-color: transparent !important;
+}
+
+/* ==========================================================================
+   3. 右侧大纲 Aside Outline (Vue 经典绿色左侧标线)
+   ========================================================================== */
+.VPDocAsideOutline .outline-link {
+  font-size: 13px !important;
+  color: var(--vp-c-text-2) !important;
+  line-height: 24px !important;
+  transition: color 0.2s ease !important;
+}
+
+.VPDocAsideOutline .outline-link:hover,
+.VPDocAsideOutline .outline-link.active {
+  color: var(--vp-c-brand-1) !important;
+}
+
+.VPDocAsideOutline .outline-marker {
+  background-color: var(--vp-c-brand-1) !important;
+  width: 2.5px !important;
+  border-radius: 2px !important;
+}
+
+/* ==========================================================================
+   4. 正文排版、行内代码与链接 (Vue Document Content)
+   ========================================================================== */
+.vp-doc h1 {
+  font-size: 38px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--vp-c-text-1) !important;
+  margin-bottom: 24px !important;
+}
+
+.vp-doc h2 {
+  font-size: 24px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--vp-c-text-1) !important;
+  border-top: 1px solid var(--vp-c-divider) !important;
+  margin-top: 48px !important;
+  padding-top: 24px !important;
+}
+
+.vp-doc h3 {
+  font-size: 19px !important;
+  font-weight: 600 !important;
+  color: var(--vp-c-text-1) !important;
+  margin-top: 32px !important;
+}
+
+.vp-doc p {
+  line-height: 1.7 !important;
+  color: var(--vp-c-text-1) !important;
+}
+
+/* 链接：Vue 绿 */
+.vp-doc a {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 500 !important;
+  text-decoration: none !important;
+  transition: color 0.2s ease;
+}
+
+.vp-doc a:hover {
+  color: var(--vt-c-green-dark) !important;
+}
+
+/* 行内代码标签：Vue 纯净软灰底与靛蓝代码字，无边框 */
+.vp-doc :not(pre) > code {
+  color: var(--vt-c-text-light-code) !important;
+  background-color: var(--vp-c-bg-mute) !important;
+  padding: 3px 6px !important;
+  border-radius: 4px !important;
+  font-size: 0.875em !important;
+  font-weight: 400 !important;
+  border: none !important;
+}
+
+.dark .vp-doc :not(pre) > code {
+  color: var(--vt-c-text-dark-code) !important;
+  background-color: var(--vp-c-bg-mute) !important;
+}
+
+/* 代码块 */
+.vp-doc div[class*='language-'] {
+  border-radius: 8px !important;
+  border: 1px solid var(--vp-c-divider) !important;
+}
+
+/* 引用块 */
+.vp-doc blockquote {
+  border-left: 4px solid var(--vp-c-brand-1) !important;
+  background-color: var(--vp-c-bg-soft) !important;
+  padding: 1rem 1.25rem !important;
+  border-radius: 0 8px 8px 0 !important;
+  margin: 1.5rem 0 !important;
+}
+
+/* 数据表格：Vue 简约发丝线排版 */
+.vp-doc table {
+  display: table !important;
+  width: 100% !important;
+  border-collapse: collapse !important;
+  margin: 1.5rem 0 !important;
+  border: 1px solid var(--vp-c-divider) !important;
+}
+
+.vp-doc th {
+  background-color: var(--vp-c-bg-soft) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  color: var(--vp-c-text-1) !important;
+  padding: 10px 14px !important;
+  border: 1px solid var(--vp-c-divider) !important;
+}
+
+.vp-doc td {
+  padding: 10px 14px !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  border: 1px solid var(--vp-c-divider) !important;
+}
+
+.vp-doc tr:hover td {
+  background-color: var(--vp-c-bg-soft) !important;
+}
+
+/* ==========================================================================
+   5. 首页 Hero 区域 (解决遮挡，Vue.js 风格大字与按钮)
+   ========================================================================== */
+.VPHomeHero {
+  position: relative;
+  margin-top: 0 !important;
+  padding-top: calc(var(--vp-nav-height) + 40px) !important;
+  padding-bottom: 40px !important;
+}
+
+@media (min-width: 640px) {
+  .VPHomeHero {
+    padding-top: calc(var(--vp-nav-height) + 56px) !important;
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHomeHero {
+    padding-top: calc(var(--vp-nav-height) + 72px) !important;
+  }
+}
+
+.VPHero .name,
+.VPHero .text {
+  max-width: none !important;
+}
+
+.VPHero .name {
+  font-size: 56px !important;
+  line-height: 1.15 !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+}
+
+.VPHero .text {
+  font-size: 44px !important;
+  line-height: 1.2 !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--vp-c-text-1) !important;
+}
+
+.VPHero .tagline {
+  font-size: 18px !important;
+  line-height: 1.6 !important;
+  color: var(--vp-c-text-2) !important;
+  max-width: 720px;
+}
+
+/* Vue 官方按钮风格 */
+.VPButton.brand {
+  background-color: var(--vt-c-green) !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  transition: background-color 0.2s ease !important;
+}
+
+.VPButton.brand:hover {
+  background-color: var(--vt-c-green-dark) !important;
+  transform: none !important;
+}
+
+.VPButton.alt {
+  background-color: var(--vp-c-bg-mute) !important;
+  color: var(--vp-c-text-1) !important;
+  border: 1px solid var(--vp-c-divider) !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  transition: background-color 0.2s ease, border-color 0.2s ease !important;
+}
+
+.VPButton.alt:hover {
+  border-color: var(--vp-c-brand-1) !important;
+  color: var(--vp-c-brand-1) !important;
+  transform: none !important;
+}
+
+/* ==========================================================================
+   6. 特性卡片 (Vue Features Grid)
+   ========================================================================== */
+.VPFeature {
+  background-color: var(--vp-c-bg-soft) !important;
+  border: 1px solid var(--vp-c-divider) !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+  transition: border-color 0.25s, background-color 0.25s !important;
+}
+
+.VPFeature:hover {
+  border-color: var(--vp-c-brand-1) !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.VPFeature .icon {
+  background-color: var(--vp-c-bg-mute) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  width: 44px !important;
+  height: 44px !important;
+  color: var(--vt-c-green) !important;
+}
+
+.VPFeature .icon svg {
+  stroke: var(--vt-c-green) !important;
+  width: 22px !important;
+  height: 22px !important;
+}
+
+.home-guide-section {
+  max-width: 1152px;
+  margin: 3.5rem auto 6rem;
+  padding: 0 1.5rem;
+}
+
+
+/* ==========================================================================
+   7. 思考题折叠答案面板 (Details / Summary)
+   ========================================================================== */
+.vp-doc details {
+  margin: 1.25rem 0 !important;
+  padding: 0.9rem 1.2rem !important;
+  border-radius: 8px !important;
+  background-color: var(--vp-c-bg-soft) !important;
+  border: 1px solid var(--vp-c-divider) !important;
+  border-left: 4px solid var(--vp-c-brand-1) !important;
+}
+
+.vp-doc details summary {
+  cursor: pointer !important;
+  font-weight: 600 !important;
+  color: var(--vp-c-brand-1) !important;
+  user-select: none !important;
+  outline: none !important;
+}
+
+.vp-doc details[open] summary {
+  margin-bottom: 0.75rem !important;
+  padding-bottom: 0.5rem !important;
+  border-bottom: 1px dashed var(--vp-c-divider) !important;
+}

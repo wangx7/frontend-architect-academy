@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none">
+  <defs>
+    <linearGradient id="vueGreenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#42D392"/>
+      <stop offset="100%" stop-color="#42B883"/>
+    </linearGradient>
+  </defs>
+  <!-- Top Stack Layer: Vue Emerald Green -->
+  <polygon points="20,5 34,13 20,21 6,13" fill="url(#vueGreenGrad)"/>
+  <!-- Middle Stack Layer: Vue Emerald Border -->
+  <path d="M6,19 L20,27 L34,19" stroke="#42B883" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Bottom Foundation Layer: Vue Indigo Slate -->
+  <path d="M6,26 L20,34 L34,26" stroke="#213547" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
