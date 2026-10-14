@@ -72,7 +72,7 @@ title: 第 08 讲 · React Fiber 架构与双框架设计权衡
 
 ### 2.5 可运行的协作式 Fiber 教学模型：保存进度、让出主线程、完成后切换树引用
 
-为了避免文章代码与自动化测试中的实现逐渐分叉，完整、可运行的教学模型统一维护在 [`labs/mini-fiber-scheduler.mjs`](https://github.com/wangx7/frontend-architect-academy/blob/main/labs/mini-fiber-scheduler.mjs)。
+为了避免文章代码与自动化测试中的实现逐渐分叉，完整、可运行的教学模型统一维护在 [\`labs/mini-fiber-scheduler.mjs\`](../labs/mini-fiber-scheduler.mjs)。
 
 在仓库根目录运行：
 

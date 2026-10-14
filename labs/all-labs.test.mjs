@@ -372,6 +372,7 @@ test('第08讲：Fiber 教学调度器应遍历所有节点、分多个任务让
   }
   const result = await runConcurrentRender(tree, { frameYieldMs: 1, unitWorkMs: 2 })
   assert.equal(result.committed, true)
+  assert.equal(result.treeSwapped, true)
   assert.equal(result.committedRoot, 'App')
   assert.deepEqual(result.visited, ['App', 'Header', 'Logo', 'Main', 'List', 'Footer'])
   assert.equal(result.slices.flat().length, 6)

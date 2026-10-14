@@ -104,6 +104,7 @@ export function runConcurrentRender(vnodeTree, options = {}) {
         }
 
         slices.push(currentSlice)
+        visited.push(...currentSlice)
         sliceDurationsMs.push(Number((performance.now() - start).toFixed(3)))
 
         if (workInProgress !== null) {
@@ -115,6 +116,7 @@ export function runConcurrentRender(vnodeTree, options = {}) {
         currentRoot = workInProgressRoot
         finish(null, {
           committed: true,
+          treeSwapped: currentRoot === workInProgressRoot,
           committedRoot: currentRoot.type,
           slices,
           sliceDurationsMs,
